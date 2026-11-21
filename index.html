@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>手勢音樂煙火 ✋🎹🎆</title>
+<style>
+  html,body{margin:0;height:100%;background:#05050f;color:#fff;font-family:system-ui,"Noto Sans TC",sans-serif;overflow:hidden}
+  canvas{position:fixed;inset:0;width:100%;height:100%}
+  video{display:none}
+  #hud{position:fixed;left:16px;top:14px;font-size:15px;line-height:1.6;text-shadow:0 0 8px #000;pointer-events:none}
+  #note{font-size:44px;font-weight:700;letter-spacing:2px}
+  #start{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:rgba(5,5,15,.93);text-align:center;padding:24px}
+  #start h1{margin:0;font-size:34px}
+  #start p{margin:0;max-width:520px;line-height:1.8;color:#cfd3ff}
+  button{font-size:20px;padding:14px 36px;border:0;border-radius:40px;background:linear-gradient(90deg,#7b5cff,#ff5c9d);color:#fff;cursor:pointer}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<video id="v" playsinline></video>
+<div id="hud"><div id="note">--</div><div id="info">把手伸進鏡頭</div></div>
+<div id="start">
+  <h1>✋ 手勢音樂 × 煙火 🎆</h1>
+  <p>🎹 手越高音越高<br>🖐 伸出的手指越多，和弦疊越多音<br>✊ 握拳蓄力，放開就放煙火<br>✨ 指尖會發光<br>（請允許相機權限，並戴上耳機或打開喇叭）</p>
+  <button id="go">開始</button>
+  <p id="msg"></p>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
+<script>
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const video = document.getElementById('v');
+let W, H;
+function resize(){ W = cv.width = innerWidth; H = cv.height = innerHeight; }
+addEventListener('resize', resize); resize();
+
+/* ---------- 音樂 ---------- */
+const MAJOR = [0,2,4,5,7,9,11], NAMES = ['C','D','E','F','G','A','B'];
+const DEG = 15;                       // 兩個八度多一點 (C3 起)
+const degFreq = d => 130.81 * Math.pow(2, (Math.floor(d/7)*12 + MAJOR[d%7]) / 12);
+const degName = d => NAMES[d%7] + (3 + Math.floor(d/7));
+let ac, master, pan, voices = [];
+
+function initAudio(){
+  ac = new (window.AudioContext || window.webkitAudioContext)();
+  master = ac.createGain(); master.gain.value = 0.8;
+  const filter = ac.createBiquadFilter(); filter.type = 'lowpass'; filter.frequency.value = 2600;
+  pan = ac.createStereoPanner();
+  const delay = ac.createDelay(); delay.delayTime.value = 0.3;
+  const fb = ac.createGain(); fb.gain.value = 0.32;
+  const wet = ac.createGain(); wet.gain.value = 0.35;
+  filter.connect(pan); pan.connect(master);
+  pan.connect(delay); delay.connect(fb); fb.connect(delay); delay.connect(wet); wet.connect(master);
+  master.connect(ac.destination);
+  for(let k=0;k<5;k++){
+    const o = ac.createOscillator(); o.type = k%2 ? 'sine' : 'triangle';
+    const g = ac.createGain(); g.gain.value = 0;
+    o.connect(g); g.connect(filter); o.start();
+    voices.push({o,g});
+  }
+}
+function playChord(deg, n, x){
+  const t = ac.currentTime;
+  voices.forEach((v,k)=>{
+    v.o.frequency.setTargetAtTime(degFreq(deg + 2*k), t, 0.04);
+    v.g.gain.setTargetAtTime(k < n ? 0.17 : 0, t, 0.06);
+  });
+  pan.pan.setTargetAtTime(x*2-1, t, 0.1);
+}
+function silence(){
+  if(!ac) return;
+  voices.forEach(v=>v.g.gain.setTargetAtTime(0, ac.currentTime, 0.1));
+}
+function boom(power){
+  const t = ac.currentTime, len = 0.6;
+  const buf = ac.createBuffer(1, ac.sampleRate*len, ac.sampleRate), d = buf.getChannelData(0);
+  for(let i=0;i<d.length;i++) d[i] = (Math.random()*2-1) * Math.pow(1-i/d.length, 3);
+  const s = ac.createBufferSource(); s.buffer = buf;
+  const bp = ac.createBiquadFilter(); bp.type = 'lowpass'; bp.frequency.value = 400 + power*1200;
+  const g = ac.createGain(); g.gain.value = 0.4 + power*0.5;
+  s.connect(bp); bp.connect(g); g.connect(master); s.start(t);
+  const o = ac.createOscillator(), og = ac.createGain();
+  o.frequency.setValueAtTime(600+power*400, t); o.frequency.exponentialRampToValueAtTime(60, t+0.5);
+  og.gain.setValueAtTime(0.3, t); og.gain.exponentialRampToValueAtTime(0.001, t+0.5);
+  o.connect(og); og.connect(master); o.start(t); o.stop(t+0.55);
+}
+
+/* ---------- 煙火 ---------- */
+let parts = [];
+function burst(x, y, power){
+  const n = 50 + power*170, base = Math.random()*360;
+  for(let i=0;i<n;i++){
+    const a = Math.random()*Math.PI*2, sp = (2 + Math.random()*6) * (0.6 + power*0.9);
+    parts.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:1,hue:base + Math.random()*70});
+  }
+  if(ac) boom(power);
+}
+
+/* ---------- 手勢判斷 ---------- */
+const dist = (a,b) => Math.hypot(a.x-b.x, a.y-b.y);
+function analyze(lm){
+  const w = lm[0], f = [];
+  [[8,6],[12,10],[16,14],[20,18]].forEach(([tip,pip])=>f.push(dist(lm[tip],w) > dist(lm[pip],w)*1.05));
+  const thumb = dist(lm[4], lm[17]) > dist(lm[3], lm[17]) * 1.1;
+  const four = f.filter(Boolean).length;
+  return { fist: four === 0, count: four + (thumb?1:0), ext: [thumb, ...f] };
+}
+
+/* ---------- 畫面 ---------- */
+const TIPS = [4,8,12,16,20];
+let lastResult = null, charge = [0,0], wasFist = [false,false], lastT = performance.now();
+
+function toScreen(p, vw, vh){
+  const s = Math.max(W/vw, H/vh), ox = (W - vw*s)/2, oy = (H - vh*s)/2;
+  return { x: W - (p.x*vw*s + ox), y: p.y*vh*s + oy };
+}
+
+function glow(x, y, r, hue, a){
+  const g = ctx.createRadialGradient(x,y,0,x,y,r);
+  g.addColorStop(0, `hsla(${hue},100%,85%,${a})`);
+  g.addColorStop(0.35, `hsla(${hue},100%,60%,${a*0.6})`);
+  g.addColorStop(1, `hsla(${hue},100%,50%,0)`);
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill();
+}
+
+function frame(now){
+  requestAnimationFrame(frame);
+  const dt = Math.min((now-lastT)/1000, 0.05); lastT = now;
+  const vw = video.videoWidth || 640, vh = video.videoHeight || 480;
+
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#05050f'; ctx.fillRect(0,0,W,H);
+  if(video.readyState >= 2){
+    ctx.save(); ctx.globalAlpha = 0.3; ctx.translate(W,0); ctx.scale(-1,1);
+    const s = Math.max(W/vw, H/vh);
+    ctx.drawImage(video, (W-vw*s)/2, (H-vh*s)/2, vw*s, vh*s);
+    ctx.restore(); ctx.globalAlpha = 1;
+  }
+  // 音高參考線
+  ctx.strokeStyle = 'rgba(255,255,255,.07)'; ctx.lineWidth = 1;
+  for(let i=0;i<DEG;i++){ const y = H*(0.1 + 0.8*(1 - i/(DEG-1))); ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+
+  ctx.globalCompositeOperation = 'lighter';
+  const hands = (lastResult && lastResult.multiHandLandmarks) || [];
+  let played = false;
+
+  hands.forEach((lm, i) => {
+    const info = analyze(lm);
+    const pts = lm.map(p => toScreen(p, vw, vh));
+    const palm = { x:(pts[0].x+pts[9].x)/2, y:(pts[0].y+pts[9].y)/2 };
+
+    // 指尖發光
+    TIPS.forEach((t,k)=>{
+      const p = pts[t], on = info.ext[k];
+      glow(p.x, p.y, on ? 46 : 20, k*70 + now/30 % 360, on ? 0.95 : 0.4);
+    });
+
+    if(info.fist){
+      charge[i] = Math.min(1, (charge[i]||0) + dt*0.55);
+      const c = charge[i], shake = c*6;
+      glow(palm.x + (Math.random()-.5)*shake, palm.y + (Math.random()-.5)*shake, 40 + c*110, 20 + c*300, 0.5 + c*0.5);
+      wasFist[i] = true;
+    } else {
+      if(wasFist[i] && charge[i] > 0.12) burst(palm.x, palm.y, charge[i]);
+      wasFist[i] = false; charge[i] = 0;
+      // 音樂：由第一隻張開的手控制
+      if(!played && ac){
+        const t = 1 - Math.min(1, Math.max(0, (palm.y/H - 0.1)/0.8));
+        const deg = Math.round(t*(DEG-1));
+        playChord(deg, info.count, palm.x/W);
+        document.getElementById('note').textContent = degName(deg);
+        document.getElementById('info').textContent = `${info.count} 指 → 疊 ${info.count} 個音　(握拳蓄力 ✊→🖐 放煙火)`;
+        played = true;
+      }
+    }
+  });
+  for(let i=hands.length;i<2;i++){ charge[i]=0; wasFist[i]=false; }
+  if(!played){
+    silence();
+    document.getElementById('note').textContent = '--';
+    document.getElementById('info').textContent = hands.length ? '✊ 蓄力中… 放開！' : '把手伸進鏡頭';
+  }
+
+  // 粒子
+  for(let i=parts.length-1;i>=0;i--){
+    const p = parts[i];
+    p.vy += 0.06; p.vx *= 0.985; p.vy *= 0.985;
+    p.x += p.vx; p.y += p.vy; p.life -= dt*0.6;
+    if(p.life <= 0){ parts.splice(i,1); continue; }
+    glow(p.x, p.y, 7 + p.life*7, p.hue, p.life);
+  }
+}
+
+/* ---------- 啟動 ---------- */
+document.getElementById('go').onclick = async () => {
+  const msg = document.getElementById('msg');
+  try{
+    initAudio(); await ac.resume();
+    msg.textContent = '載入手部模型中…';
+    const hands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}` });
+    hands.setOptions({ maxNumHands:2, modelComplexity:1, minDetectionConfidence:0.6, minTrackingConfidence:0.5 });
+    hands.onResults(r => lastResult = r);
+    const stream = await navigator.mediaDevices.getUserMedia({ video:{ width:1280, height:720, facingMode:'user' } });
+    video.srcObject = stream; await video.play();
+    document.getElementById('start').style.display = 'none';
+    requestAnimationFrame(frame);
+    (async function loop(){
+      if(video.readyState >= 2) await hands.send({ image: video });
+      requestAnimationFrame(loop);
+    })();
+  }catch(e){
+    msg.textContent = '啟動失敗：' + e.message + '（請用 Chrome，並透過 http://localhost 或 https 開啟，且需連網）';
+  }
+};
+</script>
+</body>
+</html>
